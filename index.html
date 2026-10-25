@@ -141,6 +141,7 @@
 
 <div class="foot">ゆうゆうプラザ 元取れ計</div>
 
+<script src="data-safety.js"></script>
 <script>
 const KEY = "yuyu-plaza-v1";
 const todayStr = (()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");})();
@@ -154,16 +155,17 @@ const def = {
 };
 
 let state = load();
-let view = new Date(); // 表示中の月
+let view = new Date(new Date().getFullYear(),new Date().getMonth(),1); // 常に月初
 
-function load(){
-  try{
-    const s = JSON.parse(localStorage.getItem(KEY));
-    if(s) return Object.assign({}, def, s);
-  }catch(e){}
-  return Object.assign({}, def);
+function validateState(s){
+  SafeData.requireValue(SafeData.record(s) && SafeData.record(s.days),'バックアップ');
+  const next={pass:SafeData.number(s.pass,'回数券代',0),unit:SafeData.number(s.unit,'1回の料金',1),start:SafeData.date(s.start,'開始日',true),end:SafeData.date(s.end,'終了日',true),days:{}};
+  SafeData.requireValue(!next.start || !next.end || next.start<=next.end,'有効期間');
+  for(const [d,went] of Object.entries(s.days)){SafeData.date(d,'利用日');SafeData.requireValue(typeof went==='boolean','利用記録');if(went)next.days[d]=true;}
+  return next;
 }
-function save(){ localStorage.setItem(KEY, JSON.stringify(state)); }
+function load(){ return SafeData.load(KEY,JSON.parse(JSON.stringify(def)),validateState); }
+function save(){ SafeData.persist({[KEY]:state}); }
 
 function fmtMoney(n){ return "¥"+Math.round(n).toLocaleString("ja-JP"); }
 
@@ -175,7 +177,7 @@ function inRange(ds){
 
 function render(){
   // ---- サマリー計算 ----
-  const visits = Object.keys(state.days).filter(d=>state.days[d]).length;
+  const visits = Object.keys(state.days).filter(d=>state.days[d] && inRange(d)).length;
   const value = visits * state.unit;          // 受けた価値
   const diff = value - state.pass;            // 得 or 損
   const breakeven = Math.max(0, Math.ceil(state.pass / state.unit) - visits);
@@ -217,10 +219,11 @@ function render(){
     if(dow===0) cell.classList.add("sun");
     if(dow===6) cell.classList.add("sat");
     if(ds===todayStr) cell.classList.add("today");
-    if(!inRange(ds)) cell.classList.add("out");
+    if(!inRange(ds)){cell.classList.add('out');cell.setAttribute('aria-disabled','true');cell.title='有効期間外です';}
     if(state.days[ds]) cell.classList.add("went");
     cell.textContent = d;
     cell.onclick = ()=>{
+      if(!inRange(ds) || !SafeData.writable())return;
       if(state.days[ds]) delete state.days[ds];
       else state.days[ds] = true;
       save(); render();
@@ -229,8 +232,8 @@ function render(){
   }
 }
 
-document.getElementById("prev").onclick = ()=>{ view.setMonth(view.getMonth()-1); render(); };
-document.getElementById("next").onclick = ()=>{ view.setMonth(view.getMonth()+1); render(); };
+document.getElementById("prev").onclick = ()=>{ view = new Date(view.getFullYear(),view.getMonth()-1,1); render(); };
+document.getElementById("next").onclick = ()=>{ view = new Date(view.getFullYear(),view.getMonth()+1,1); render(); };
 
 // 設定フォーム
 function fillCfg(){
@@ -240,11 +243,12 @@ function fillCfg(){
   document.getElementById("cfgEnd").value = state.end;
 }
 document.getElementById("saveCfg").onclick = ()=>{
-  state.pass = Math.max(0, parseInt(document.getElementById("cfgPass").value)||0);
-  state.unit = Math.max(1, parseInt(document.getElementById("cfgUnit").value)||520);
-  state.start = document.getElementById("cfgStart").value;
-  state.end = document.getElementById("cfgEnd").value;
-  save(); render();
+  if(!SafeData.writable())return;
+  try{
+    const next=validateState({pass:Number(document.getElementById('cfgPass').value),unit:Number(document.getElementById('cfgUnit').value),start:document.getElementById('cfgStart').value,end:document.getElementById('cfgEnd').value,days:state.days});
+    SafeData.persist({[KEY]:next});state=next;
+  }catch(err){alert(err.message);return;}
+  render();
   const b=document.getElementById("saveCfg"); b.textContent="保存しました ✓";
   setTimeout(()=>b.textContent="保存する",1200);
 };
@@ -263,13 +267,14 @@ document.getElementById("fileInput").onchange = (e)=>{
   const r = new FileReader();
   r.onload = ()=>{
     try{
-      const s = JSON.parse(r.result);
-      state = Object.assign({}, def, s);
-      save(); fillCfg(); render();
+      const next = validateState(JSON.parse(r.result));
+      if(!confirm('現在の設定と利用記録をバックアップの内容で置き換えますか？'))return;
+      SafeData.persist({[KEY]:next},true);state=next;
+      fillCfg(); render();
       alert("読み込みました。");
-    }catch(err){ alert("ファイルを読み込めませんでした。"); }
+    }catch(err){ alert("復元できませんでした。元のデータは変更していません。"); }
   };
-  r.readAsText(f);
+  r.readAsText(f);e.target.value="";
 };
 
 fillCfg();
